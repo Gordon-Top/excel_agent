@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -21,7 +21,7 @@ class HealthResponse(BaseResponse):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=10_000)
-    session_id: str | None = None
+    session_id: str | None = Field(default=None, max_length=64)
     allow_search: bool = False
     template_name: str | None = None
     file_id: str | None = None
@@ -37,6 +37,53 @@ class ChatResponse(BaseResponse):
     metadata: dict[str, Any] = Field(default_factory=dict)
     output_file_id: str | None = None
     outputs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChatSessionCreateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+
+
+class ChatSessionCreateResponse(BaseResponse):
+    session_id: str
+    title: str | None = None
+    created_at: datetime
+
+
+class ChatSessionSummary(BaseModel):
+    session_id: str
+    title: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    last_message_preview: str | None = None
+    last_task_type: TaskType | None = None
+    turn_count: int = 0
+
+
+class ChatSessionListResponse(BaseResponse):
+    sessions: list[ChatSessionSummary]
+    total: int
+    offset: int
+    limit: int
+
+
+class ChatTurnRecord(BaseModel):
+    turn_id: int
+    task_id: str
+    task_type: TaskType
+    status: TaskStatus
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    input_file_id: str | None = None
+    output_file_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatTurnListResponse(BaseResponse):
+    session_id: str
+    turns: list[ChatTurnRecord]
+    total: int
+    offset: int
+    limit: int
 
 
 class FileUploadResponse(BaseResponse):
@@ -59,9 +106,9 @@ class ExcelPreviewResponse(BaseResponse):
 
 
 class ExcelProcessRequest(BaseModel):
-    file_id: str
+    file_id: str | None = None
     instruction: str = Field(min_length=1, max_length=10_000)
-    session_id: str | None = None
+    session_id: str | None = Field(default=None, max_length=64)
     template_name: str | None = None
     execution_mode: ExecutionMode | None = None
     allow_search: bool = False
@@ -75,6 +122,7 @@ class ExcelProcessResponse(BaseResponse):
     outputs: list[dict[str, Any]] = Field(default_factory=list)
     execution: dict[str, Any] = Field(default_factory=dict)
     preview: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskRecord(BaseModel):

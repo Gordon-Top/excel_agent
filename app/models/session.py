@@ -1,62 +1,34 @@
-from tortoise import fields
+﻿from tortoise import fields
 from tortoise.models import Model
 
 
 class ChatSession(Model):
     """会话主表：一条记录代表一个完整的聊天会话。"""
 
-    # 会话主表：一条记录代表一个完整的聊天会话。
-    # 主要用于把同一轮或同一段连续对话归到一个 session 下面。
     id = fields.IntField(pk=True, description="数据库自增主键")
-
-    session_id = fields.CharField(
-        max_length=64,
-        unique=True,
-        index=True,
-        description="给前后端和业务层使用的会话唯一标识，不直接暴露数据库自增 id",
-    )
-
-    title = fields.CharField(
-        max_length=255,
-        null=True,
-        description="会话标题，可由用户指定或系统自动总结生成",
-    )
-
-    created_at = fields.DatetimeField(auto_now_add=True, description="会话创建时间")
-
-    updated_at = fields.DatetimeField(auto_now=True, description="会话最后更新时间")
+    session_id = fields.CharField(max_length=64, unique=True, index=True)
+    title = fields.CharField(max_length=255, null=True)
+    summary = fields.TextField(null=True, description="较早成功回合的滚动摘要")
+    summarized_turn_count = fields.IntField(default=0, description="已压缩的成功回合总数")
+    summarized_through_turn_id = fields.IntField(null=True, description="最后一个已压缩回合的 chat_messages.id")
+    summary_updated_at = fields.DatetimeField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True, index=True)
 
     class Meta:
-
         table = "chat_sessions"
-        table_description = "会话主表：保存聊天会话本身，不保存具体每条消息内容"
+        table_description = "会话主表：保存会话、标题和滚动摘要"
 
 
 class ChatMessage(Model):
     """对话回合表：一条记录保存某个任务下的完整消息序列。"""
 
-    id = fields.IntField(pk=True, description="数据库自增主键")
-
-    session_id = fields.CharField(
-        max_length=64,
-        index=True,
-        description="逻辑关联 chat_sessions.session_id，表示回合所属会话",
-    )
-
-    task_id = fields.CharField(
-        max_length=64,
-        unique=True,
-        description="逻辑关联 agent_tasks.task_id，一条任务只保存一个对话回合",
-    )
-
-    message_json = fields.JSONField(
-        default=list,
-        description="该回合的 OpenAI 消息数组，按执行顺序保存 user、assistant、system、tool 消息",
-    )
-
-    created_at = fields.DatetimeField(auto_now_add=True, description="回合创建时间")
-
-    updated_at = fields.DatetimeField(auto_now=True, description="回合最后更新时间")
+    id = fields.IntField(pk=True)
+    session_id = fields.CharField(max_length=64, index=True)
+    task_id = fields.CharField(max_length=64, unique=True)
+    message_json = fields.JSONField(default=list)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
 
     class Meta:
         table = "chat_messages"

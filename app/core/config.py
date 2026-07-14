@@ -1,4 +1,4 @@
-from functools import lru_cache
+﻿from functools import lru_cache
 from datetime import timedelta
 from pathlib import Path
 
@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     redis_task_events_max_length: int = 200
     redis_session_memory_ttl_seconds: int = 86_400
     redis_session_memory_max_length: int = 20
+
+    # 多轮对话上下文与滚动摘要
+    conversation_context_max_messages: int = 20
+    conversation_context_max_chars: int = 24_000
+    conversation_summary_trigger_turns: int = 20
+    conversation_summary_batch_turns: int = 10
+    conversation_summary_max_chars: int = 4_000
     redis_lock_ttl_seconds: int = 120
     redis_idempotency_ttl_seconds: int = 600
 

@@ -74,9 +74,14 @@ class AgentRouter:
         message: str,
         *,
         current_time: datetime | None = None,
+        conversation_messages: list[dict[str, str]] | None = None,
+        conversation_summary: str | None = None,
     ) -> dict[str, Any]:
         now = current_time or self._system_now()
-        search_plan = await self._plan_search(message, now=now)
+        search_plan = await self._plan_search(
+            message, now=now, conversation_messages=conversation_messages,
+            conversation_summary=conversation_summary,
+        )
         return await self.search_service.search(message, search_plan=search_plan)
 
     async def _plan_search(
@@ -84,15 +89,16 @@ class AgentRouter:
         message: str,
         *,
         now: datetime,
+        conversation_messages: list[dict[str, str]] | None = None,
+        conversation_summary: str | None = None,
     ) -> dict[str, Any]:
         try:
             completion = await self.llm_client.complete_json(
-                system_prompt=compose_system_prompt(
-                    SEARCH_PLANNER_SYSTEM_PROMPT,
-                    SEARCH_PLANNER_JSON_PROMPT,
-                    now=now,
+                messages=self._build_conversation_messages(
+                    compose_system_prompt(SEARCH_PLANNER_SYSTEM_PROMPT, SEARCH_PLANNER_JSON_PROMPT, now=now),
+                    build_search_plan_prompt(message, now=now),
+                    conversation_messages, conversation_summary,
                 ),
-                user_prompt=build_search_plan_prompt(message, now=now),
                 temperature=0.0,
             )
             return self._normalize_search_plan(completion["content"], message)
@@ -140,6 +146,8 @@ class AgentRouter:
         template_name: str | None = None,
         execution_mode: ExecutionMode | None = None,
         task_id: str | None = None,
+        conversation_messages: list[dict[str, str]] | None = None,
+        conversation_summary: str | None = None,
     ) -> dict[str, Any]:
         # 非流式接口统一走这里，内部按 chat / search / excel 三种意图分流。
         current_time = self._system_now()
@@ -157,19 +165,15 @@ class AgentRouter:
             search_payload = await self.plan_and_search(
                 message,
                 current_time=current_time,
+                conversation_messages=conversation_messages,
+                conversation_summary=conversation_summary,
             )
             results = search_payload["results"]
             completion = await self.llm_client.complete_json(
-                system_prompt=compose_system_prompt(
-                    SEARCH_SYSTEM_PROMPT,
-                    SEARCH_JSON_OUTPUT_PROMPT,
-                    now=current_time,
-                ),
-                user_prompt=build_search_user_prompt(
-                    message,
-                    results,
-                    search_payload["search_context"],
-                    template_name=template_name,
+                messages=self._build_conversation_messages(
+                    compose_system_prompt(SEARCH_SYSTEM_PROMPT, SEARCH_JSON_OUTPUT_PROMPT, now=current_time),
+                    build_search_user_prompt(message, results, search_payload["search_context"], template_name=template_name),
+                    conversation_messages, conversation_summary,
                 ),
             )
             parsed = self._normalize_search_json(completion["content"])
@@ -222,7 +226,8 @@ class AgentRouter:
             selected_mode = execution_mode or self._default_excel_execution_mode()
             final_result: dict[str, Any] | None = None
             async for event_name, event_payload in self.process_excel(
-                file_id=file_id, instruction=message, execution_mode=selected_mode, task_id=task_id
+                file_id=file_id, instruction=message, execution_mode=selected_mode, task_id=task_id,
+                conversation_messages=conversation_messages, conversation_summary=conversation_summary,
             ):
                 if event_name == SSEEventType.RESULT and isinstance(event_payload, dict) and event_payload.get("kind") == "execution_result":
                     final_result = event_payload
@@ -241,12 +246,11 @@ class AgentRouter:
             }
 
         completion = await self.llm_client.complete_json(
-            system_prompt=compose_system_prompt(
-                CHAT_SYSTEM_PROMPT,
-                CHAT_JSON_OUTPUT_PROMPT,
-                now=current_time,
+            messages=self._build_conversation_messages(
+                compose_system_prompt(CHAT_SYSTEM_PROMPT, CHAT_JSON_OUTPUT_PROMPT, now=current_time),
+                build_chat_user_prompt(message, template_name=template_name),
+                conversation_messages, conversation_summary,
             ),
-            user_prompt=build_chat_user_prompt(message, template_name=template_name),
         )
         parsed = self._normalize_chat_json(completion["content"])
         storage = self._build_openai_storage_payload(
@@ -280,6 +284,8 @@ class AgentRouter:
         template_name: str | None = None,
         execution_mode: ExecutionMode | None = None,
         task_id: str | None = None,
+        conversation_messages: list[dict[str, str]] | None = None,
+        conversation_summary: str | None = None,
     ) -> AsyncIterator[tuple[SSEEventType, dict[str, Any]]]:
         # 流式接口优先保证用户看到实时内容，Excel 场景则先走结构化建议。
         current_time = self._system_now()
@@ -312,7 +318,8 @@ class AgentRouter:
             selected_mode = execution_mode or self._default_excel_execution_mode()
             final_result: dict[str, Any] | None = None
             async for event_name, event_payload in self.process_excel(
-                file_id=file_id, instruction=message, execution_mode=selected_mode, task_id=task_id
+                file_id=file_id, instruction=message, execution_mode=selected_mode, task_id=task_id,
+                conversation_messages=conversation_messages, conversation_summary=conversation_summary,
             ):
                 if event_name == SSEEventType.RESULT and isinstance(event_payload, dict) and event_payload.get("kind") == "execution_result":
                     final_result = event_payload
@@ -345,6 +352,8 @@ class AgentRouter:
             search_payload = await self.plan_and_search(
                 message,
                 current_time=current_time,
+                conversation_messages=conversation_messages,
+                conversation_summary=conversation_summary,
             )
             citations = search_payload["results"]
             yield SSEEventType.TOOL_CALL, {
@@ -378,19 +387,16 @@ class AgentRouter:
 
         yield SSEEventType.STATUS, {"message": "正在调用 DeepSeek 生成回答"}
         chunks: list[str] = []
+        request_messages = self._build_conversation_messages(
+            system_prompt, user_prompt, conversation_messages, conversation_summary
+        )
         request_payload = {
             "model": self.settings.default_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            "messages": request_messages,
             "temperature": 0.3,
             "stream": True,
         }
-        async for chunk in self.llm_client.stream_text(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-        ):
+        async for chunk in self.llm_client.stream_text(messages=request_messages):
             chunks.append(chunk)
             yield SSEEventType.MESSAGE, {
                 "delta": chunk,
@@ -425,6 +431,8 @@ class AgentRouter:
         instruction: str,
         execution_mode: ExecutionMode,
         task_id: str | None = None,
+        conversation_messages: list[dict[str, str]] | None = None,
+        conversation_summary: str | None = None,
     ) -> AsyncIterator[tuple[SSEEventType, dict[str, Any]]]:
         file_path = await self.file_manager.resolve_path_async(file_id)
         yield SSEEventType.STATUS, {"message": "正在解析 Excel 工作簿结构"}
@@ -433,8 +441,11 @@ class AgentRouter:
 
         yield SSEEventType.STATUS, {"message": "正在生成 Excel 处理方案与可执行代码"}
         completion = await self.llm_client.complete_json(
-            system_prompt=compose_system_prompt(EXCEL_CODE_SYSTEM_PROMPT, now=self._system_now()),
-            user_prompt=build_excel_codegen_user_prompt(instruction, preview, file_path.suffix.lower()),
+            messages=self._build_conversation_messages(
+                compose_system_prompt(EXCEL_CODE_SYSTEM_PROMPT, now=self._system_now()),
+                build_excel_codegen_user_prompt(instruction, preview, file_path.suffix.lower()),
+                conversation_messages, conversation_summary,
+            ),
             temperature=0.0,
         )
         plan = self._normalize_excel_plan_json(completion["content"])
@@ -571,6 +582,10 @@ class AgentRouter:
             "preview": preview, "output_preview": output_preview,
             "plan": {"task_analysis": plan["task_analysis"], "execution_steps": plan["execution_steps"], "expected_outputs": plan["expected_outputs"]},
             "execution": public_execution, "generated_files": [str(item) for item in generated_paths],
+            "model_audit": {
+                "request": completion.get("request_payload", {}),
+                "response": completion.get("raw_response", {}),
+            },
             "outputs": registered_outputs, "primary_output": primary_output,
         }
         yield SSEEventType.RESULT, final_payload
@@ -627,6 +642,42 @@ class AgentRouter:
             f"文件 ID：{primary['file_id']}\n"
             f"下载地址：{primary['download_url']}"
         )
+
+    async def generate_conversation_summary(
+        self, previous_summary: str | None, turns: list[dict[str, Any]]
+    ) -> str:
+        serialized = json.dumps(turns, ensure_ascii=False, default=str)
+        prompt = (
+            "请把已有滚动摘要与本批较早对话合并为一份精炼、事实准确的会话摘要。"
+            "必须保留用户长期目标与偏好、已确认约束和决策、重要名称/时间/数字/业务定义、"
+            "尚未解决的问题、Excel 已执行的关键操作和结果，以及搜索主题和已确认结论。"
+            "不要包含大段代码、完整搜索原文、执行日志、异常堆栈、失效临时路径或未经确认的推测。"
+            "只输出 JSON：{\"summary\": \"...\"}。\n"
+            f"已有摘要：{previous_summary or '无'}\n待合并回合：{serialized}"
+        )
+        completion = await self.llm_client.complete_json(
+            system_prompt="你是会话记忆压缩器。只保留后续对话真正需要的稳定信息。",
+            user_prompt=prompt,
+            temperature=0.0,
+        )
+        return str(completion["content"].get("summary", "")).strip()
+
+    @staticmethod
+    def _build_conversation_messages(
+        system_prompt: str, user_prompt: str,
+        conversation_messages: list[dict[str, str]] | None = None,
+        conversation_summary: str | None = None,
+    ) -> list[dict[str, str]]:
+        if conversation_summary:
+            system_prompt = (
+                f"{system_prompt}\n\n较早对话摘要：\n{conversation_summary}\n"
+                "请将摘要作为已确认的历史背景，并结合后续完整回合回答当前请求。"
+            )
+        return [
+            {"role": "system", "content": system_prompt},
+            *(conversation_messages or []),
+            {"role": "user", "content": user_prompt},
+        ]
 
     @staticmethod
     def _normalize_chat_json(payload: dict[str, Any]) -> dict[str, Any]:

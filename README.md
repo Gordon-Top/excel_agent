@@ -2,7 +2,7 @@
 
 基于 FastAPI 的单用户本地 AI Agent，核心能力是：**上传 Excel/CSV，用自然语言描述清洗、整理、计算和格式化要求，系统实际执行代码并返回新的可下载文件。**
 
-项目同时支持普通对话、联网搜索、模型生成会话标题，以及任务状态与执行元数据持久化。
+项目同时支持多轮对话、联网搜索、Excel 连续修改、模型生成会话标题，以及任务状态与执行元数据持久化。
 
 ## Excel 处理链路
 
@@ -21,6 +21,16 @@
 2. `processed_output.xlsm`
 3. `processed_output.csv`
 4. 其他 Excel/CSV 文件
+
+## 多轮对话与会话记忆
+
+- 使用 `POST /api/chat/sessions` 显式创建新对话；客户端后续持续传递返回的 `session_id`。
+- Redis 使用 `session:context:v2:{session_id}` 缓存完整上下文文档，默认 TTL 为 24 小时；读取不会刷新 TTL。
+- Redis 缺失、过期、损坏或不可用时，从 MySQL 恢复成功回合和滚动摘要，并重新回填 Redis。
+- 模型上下文由“系统提示词 + 较早滚动摘要 + 最近完整回合 + 当前消息”组成；默认最多 20 条历史消息、24,000 字符，并且不会拆散 user/assistant 回合。
+- 未压缩成功回合达到第 21 轮时，最早 10 轮会合并到滚动摘要，最近 11 轮保留原文。MySQL 中的原始回合不会删除。
+- 同一 `session_id` 的同步、流式聊天和 Excel 请求使用会话锁；并发请求返回 HTTP 409 和 `session_busy`。
+- Excel 请求可省略 `file_id`，此时按最近成功 Excel 任务的输出文件、输入文件顺序继承；显式 `file_id` 始终优先。
 
 ## API
 
@@ -93,6 +103,25 @@
 
 其中 `file_id` 使用处理响应中的 `output_file_id` 或 `outputs[].file_id`。
 
+### 会话管理
+
+创建新对话：
+
+`POST /api/chat/sessions`
+
+```json
+{
+  "title": null
+}
+```
+
+查询会话和完整历史回合：
+
+- `GET /api/chat/sessions?offset=0&limit=20`
+- `GET /api/chat/sessions/{session_id}/turns?offset=0&limit=20`
+
+聊天接口仍同时支持请求体 `session_id` 与请求头 `X-Session-ID`，请求体优先。再次调用创建接口并切换到新的 `session_id` 即为“开启新对话”。
+
 ### 其他接口
 
 - `GET /health`：健康检查
@@ -124,6 +153,14 @@ EXCEL_CODE_REPAIR_ATTEMPTS=2
 
 SEARCH_PROVIDER=http
 TAVILY_API_KEY=
+
+REDIS_SESSION_MEMORY_TTL_SECONDS=86400
+REDIS_LOCK_TTL_SECONDS=120
+CONVERSATION_CONTEXT_MAX_MESSAGES=20
+CONVERSATION_CONTEXT_MAX_CHARS=24000
+CONVERSATION_SUMMARY_TRIGGER_TURNS=20
+CONVERSATION_SUMMARY_BATCH_TURNS=10
+CONVERSATION_SUMMARY_MAX_CHARS=4000
 ```
 
 说明：
@@ -132,7 +169,8 @@ TAVILY_API_KEY=
 - `EXECUTION_MODE=local` 只决定无 E2B Key 时的回退模式。
 - 本地执行器已使用独立子进程和超时控制，但隔离能力仍弱于 E2B，生产环境建议使用 E2B。
 - E2B 远程工作目录使用 `/tmp/excel-agent`，兼容官方代码解释器模板的写权限。
-- MySQL 和 Redis 可在本地简化运行时留空；上线时建议配置以持久化任务、文件记录、会话和事件。
+- MySQL 是会话历史与滚动摘要的权威数据源，Redis 是可过期的性能缓存；两者都未配置时，仅支持单进程内的临时多轮上下文。
+- 上线前执行最新 Aerich 迁移，为 `chat_sessions` 增加摘要字段，并为会话和任务查询增加索引。
 
 ## 启动
 
@@ -154,7 +192,7 @@ uv run python -m app.main
 .\.venv\Scripts\python.exe -m compileall -q app migrations tests
 ```
 
-测试覆盖会话回合存储、模型标题、联网搜索规划与去重、Excel 实际处理、输出下载信息、代码安全校验以及执行失败后的自动修复重试。
+测试覆盖会话回合存储、Redis/MySQL 上下文回退、20/21 轮摘要边界、完整回合滑动窗口、新会话隔离、Excel 文件继承、模型标题、联网搜索规划与去重、Excel 实际处理、代码安全校验以及执行失败后的自动修复重试。
 
 ## 数据库说明
 

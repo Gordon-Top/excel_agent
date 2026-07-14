@@ -1,4 +1,4 @@
-from tortoise import fields
+﻿from tortoise import fields
 from tortoise.models import Model
 
 
@@ -81,9 +81,8 @@ class AgentTask(Model):
     class Meta:
 
         table = "agent_tasks"
-        table_description = (
-            "任务表：记录 Agent 每次实际执行动作，是任务历史和任务追踪的核心表"
-        )
+        table_description = "任务表：记录 Agent 每次实际执行动作，是任务历史和任务追踪的核心表"
+        indexes = (("session_id", "status", "created_at"),)
 
 
 class StoredFile(Model):
